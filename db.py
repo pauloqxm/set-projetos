@@ -581,7 +581,6 @@ CREATE TABLE IF NOT EXISTS usuarios (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessoes (
     token TEXT PRIMARY KEY,
@@ -713,7 +712,6 @@ CREATE TABLE IF NOT EXISTS usuarios (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessoes (
     token TEXT PRIMARY KEY,
