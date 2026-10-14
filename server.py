@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import db
 import notifications
 import responsaveis
+import sso
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -40,6 +41,8 @@ PUBLIC_PATHS = {
     "/api/me",
     "/api/health",
     "/favicon.ico",
+    "/login/sso",
+    "/signin-oidc",
 }
 
 
@@ -501,11 +504,26 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/"):
             self._send_json({"ok": False, "erro": "Não autenticado"}, 401)
         else:
+            destino = (
+                "/login/sso"
+                if sso.ativo() and not sso.login_local_habilitado()
+                else "/login.html"
+            )
             self.send_response(302)
-            self.send_header("Location", "/login.html")
+            self.send_header("Location", destino)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
         return None
+
+    def _sso_fluxo_cookie(self, valor: str = "", *, clear: bool = False) -> str:
+        secure = "; Secure" if COOKIE_SECURE else ""
+        if clear:
+            return (
+                f"{sso.COOKIE_FLUXO}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure}"
+            )
+        return (
+            f"{sso.COOKIE_FLUXO}={valor}; Path=/; Max-Age=600; HttpOnly; SameSite=Lax{secure}"
+        )
 
     def _home_for_user(self, user: dict | None) -> str:
         return db.home_for_user(user)
@@ -615,10 +633,59 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
+        if path == "/login/sso":
+            if not sso.ativo():
+                self._redirect("/login.html?erro=sso")
+                return
+            url, fluxo = sso.iniciar_login()
+            self.send_response(302)
+            self.send_header("Location", url)
+            self.send_header("Set-Cookie", self._sso_fluxo_cookie(fluxo))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
+        if path == "/signin-oidc":
+            query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            limpar = self._sso_fluxo_cookie(clear=True)
+            try:
+                info = sso.concluir_login(query, self._cookies().get(sso.COOKIE_FLUXO))
+            except sso.ErroSso as exc:
+                destino = "/login.html?erro=" + (
+                    "sem_acesso" if exc.codigo == "access_denied" else "sso"
+                )
+                self.send_response(302)
+                self.send_header("Location", destino)
+                self.send_header("Set-Cookie", limpar)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+
+            user = db.get_usuario_by_sso_sub(info["sub"])
+            if not user:
+                self.send_response(302)
+                self.send_header("Location", "/login.html?erro=sem_acesso")
+                self.send_header("Set-Cookie", limpar)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+
+            token = db.create_session(user["id"])
+            self.send_response(302)
+            self.send_header("Location", self._home_for_user(user))
+            self.send_header("Set-Cookie", self._session_cookie(token))
+            self.send_header("Set-Cookie", limpar)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
         if path == "/api/logout":
             db.destroy_session(self._session_token())
+            payload = {"ok": True}
+            if sso.ativo():
+                payload["sso_logout"] = sso.url_logout()
             self._send_json(
-                {"ok": True},
+                payload,
                 cookies=[self._session_cookie("", clear=True)],
             )
             return
@@ -856,7 +923,15 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/me":
             user = self._current_user()
-            self._send_json({"ok": True, "usuario": user})
+            payload = {
+                "ok": True,
+                "usuario": user,
+                "sso_ativo": sso.ativo(),
+                "login_local": (not sso.ativo()) or sso.login_local_habilitado(),
+            }
+            if sso.ativo():
+                payload["logout_sso_url"] = sso.url_logout()
+            self._send_json(payload)
             return
 
         if path == "/api/usuarios":
@@ -950,6 +1025,12 @@ class Handler(SimpleHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json({"ok": False, "erro": "JSON inválido"}, 400)
                 return
+            with db.connect() as conn:
+                db.init_db(conn)
+                before = db.get_usuario(conn, user_id)
+            if not before:
+                self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
+                return
             try:
                 updated = db.update_usuario(user_id, body)
             except ValueError as exc:
@@ -958,6 +1039,17 @@ class Handler(SimpleHTTPRequestHandler):
             if not updated:
                 self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
                 return
+            if (
+                sso.ativo()
+                and before.get("sso_sub")
+                and before.get("ativo")
+                and not updated.get("ativo")
+            ):
+                try:
+                    sso.remover(before["sso_sub"])
+                except sso.ErroSso as exc:
+                    self._send_json({"ok": False, "erro": str(exc)}, 400)
+                    return
             self._send_json({"ok": True, "usuario": updated})
             return
 
@@ -1149,6 +1241,18 @@ class Handler(SimpleHTTPRequestHandler):
                     400,
                 )
                 return
+            with db.connect() as conn:
+                db.init_db(conn)
+                before = db.get_usuario(conn, user_id)
+            if not before:
+                self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
+                return
+            if sso.ativo() and before.get("sso_sub"):
+                try:
+                    sso.remover(before["sso_sub"])
+                except sso.ErroSso as exc:
+                    self._send_json({"ok": False, "erro": str(exc)}, 400)
+                    return
             try:
                 if not db.delete_usuario(user_id):
                     self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
@@ -1361,6 +1465,9 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/login":
+            if sso.ativo() and not sso.login_local_habilitado():
+                self._send_json({"ok": False, "erro": "Use o login pelo SSO"}, 410)
+                return
             try:
                 body = self._read_json()
             except json.JSONDecodeError:
@@ -1382,10 +1489,79 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/logout":
             db.destroy_session(self._session_token())
+            payload = {"ok": True}
+            if sso.ativo():
+                payload["sso_logout"] = sso.url_logout()
             self._send_json(
-                {"ok": True},
+                payload,
                 cookies=[self._session_cookie("", clear=True)],
             )
+            return
+
+        ligar_match = re.fullmatch(r"/api/usuarios/(\d+)/ligar-sso", path)
+        if ligar_match:
+            if not self._require_admin():
+                return
+            if not sso.ativo():
+                self._send_json({"ok": False, "erro": "SSO não configurado"}, 400)
+                return
+            try:
+                body = self._read_json()
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "erro": "JSON inválido"}, 400)
+                return
+            email = (body.get("email") or "").strip().lower()
+            nome = (body.get("nome") or "").strip()
+            user_id = int(ligar_match.group(1))
+            if not email or "@" not in email:
+                self._send_json({"ok": False, "erro": "Informe um e-mail válido"}, 400)
+                return
+            try:
+                with db.connect() as conn:
+                    db.init_db(conn)
+                    atual = db.get_usuario(conn, user_id)
+                if not atual:
+                    self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
+                    return
+                insc = sso.inscrever(email, nome or atual.get("nome") or email)
+                sub = insc.get("sub") or ""
+                updated = db.ligar_usuario_sso(user_id, email=email, sso_sub=sub)
+            except (sso.ErroSso, ValueError) as exc:
+                self._send_json({"ok": False, "erro": str(exc)}, 400)
+                return
+            aviso = None
+            if insc.get("emailEnviado") is False:
+                aviso = "Usuário ligado ao SSO, mas o e-mail do convite falhou; reenvie o convite."
+            self._send_json({"ok": True, "usuario": updated, "aviso": aviso})
+            return
+
+        reenviar_match = re.fullmatch(r"/api/usuarios/(\d+)/reenviar-convite", path)
+        if reenviar_match:
+            if not self._require_admin():
+                return
+            if not sso.ativo():
+                self._send_json({"ok": False, "erro": "SSO não configurado"}, 400)
+                return
+            user_id = int(reenviar_match.group(1))
+            with db.connect() as conn:
+                db.init_db(conn)
+                atual = db.get_usuario(conn, user_id)
+            if not atual:
+                self._send_json({"ok": False, "erro": "Usuário não encontrado"}, 404)
+                return
+            sub = atual.get("sso_sub") or ""
+            if not sub:
+                self._send_json(
+                    {"ok": False, "erro": "Este usuário ainda não está ligado ao SSO"},
+                    400,
+                )
+                return
+            try:
+                sso.reenviar_convite(sub)
+            except sso.ErroSso as exc:
+                self._send_json({"ok": False, "erro": str(exc)}, 400)
+                return
+            self._send_json({"ok": True})
             return
 
         if path == "/api/usuarios":
@@ -1397,13 +1573,36 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "erro": "JSON inválido"}, 400)
                 return
             try:
+                if sso.ativo():
+                    email = (body.get("email") or body.get("usuario") or "").strip().lower()
+                    nome = (body.get("nome") or "").strip()
+                    papel = body.get("papel", "editor")
+                    if not email or "@" not in email:
+                        raise ValueError("Informe um e-mail válido")
+                    insc = sso.inscrever(email, nome or email)
+                    created = db.create_usuario_sso(
+                        usuario=email,
+                        email=email,
+                        nome=nome,
+                        papel=papel,
+                        sso_sub=insc.get("sub") or "",
+                    )
+                    aviso = None
+                    if insc.get("emailEnviado") is False:
+                        aviso = (
+                            "Usuário criado, mas o e-mail do convite falhou; reenvie o convite."
+                        )
+                    self._send_json(
+                        {"ok": True, "usuario": created, "aviso": aviso}, status=201
+                    )
+                    return
                 created = db.create_usuario(
                     body.get("usuario", ""),
                     body.get("senha", ""),
                     nome=body.get("nome", ""),
                     papel=body.get("papel", "editor"),
                 )
-            except ValueError as exc:
+            except (ValueError, sso.ErroSso) as exc:
                 self._send_json({"ok": False, "erro": str(exc)}, 400)
                 return
             self._send_json({"ok": True, "usuario": created}, status=201)

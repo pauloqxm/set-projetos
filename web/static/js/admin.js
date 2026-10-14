@@ -2,9 +2,15 @@
   const el = {
     form: document.getElementById("userForm"),
     userLogin: document.getElementById("userLogin"),
+    userEmail: document.getElementById("userEmail"),
     userNome: document.getElementById("userNome"),
     userSenha: document.getElementById("userSenha"),
     userPapel: document.getElementById("userPapel"),
+    userLoginWrap: document.getElementById("userLoginWrap"),
+    userEmailWrap: document.getElementById("userEmailWrap"),
+    userSenhaWrap: document.getElementById("userSenhaWrap"),
+    userFormHint: document.getElementById("userFormHint"),
+    usersListHint: document.getElementById("usersListHint"),
     formError: document.getElementById("formError"),
     usersBody: document.getElementById("usersBody"),
     userCount: document.getElementById("userCount"),
@@ -15,9 +21,15 @@
     editId: document.getElementById("editUserId"),
     editTitle: document.getElementById("editUserTitle"),
     editNome: document.getElementById("editUserNome"),
+    editEmail: document.getElementById("editUserEmail"),
     editPapel: document.getElementById("editUserPapel"),
     editAtivo: document.getElementById("editUserAtivo"),
     editSenha: document.getElementById("editUserSenha"),
+    editSenhaWrap: document.getElementById("editSenhaWrap"),
+    ligarSsoBox: document.getElementById("ligarSsoBox"),
+    ligarSsoEmail: document.getElementById("ligarSsoEmail"),
+    btnLigarSso: document.getElementById("btnLigarSso"),
+    btnReenviarConvite: document.getElementById("btnReenviarConvite"),
     editError: document.getElementById("editUserError"),
     editCancel: document.getElementById("editUserCancel"),
     editDelete: document.getElementById("editUserDelete"),
@@ -25,6 +37,7 @@
 
   let usuarios = [];
   let me = null;
+  let ssoAtivo = false;
 
   function fmtDateTime(iso) {
     if (!iso) return "—";
@@ -69,9 +82,28 @@
     return data;
   }
 
+  function applySsoUi() {
+    if (!ssoAtivo) return;
+    if (el.userFormHint) {
+      el.userFormHint.textContent =
+        "Convide a pessoa pelo e-mail. O SET SSO envia o convite; o papel continua neste sistema.";
+    }
+    if (el.usersListHint) {
+      el.usersListHint.textContent =
+        "Usuários novos entram pelo SSO. Os atuais podem ser ligados pelo e-mail.";
+    }
+    if (el.userLoginWrap) el.userLoginWrap.hidden = true;
+    if (el.userEmailWrap) el.userEmailWrap.hidden = false;
+    if (el.userSenhaWrap) el.userSenhaWrap.hidden = true;
+    if (el.userLogin) el.userLogin.required = false;
+    if (el.userSenha) el.userSenha.required = false;
+    if (el.userEmail) el.userEmail.required = true;
+  }
+
   async function loadMe() {
     const data = await api("/api/me");
     me = data.usuario;
+    ssoAtivo = !!data.sso_ativo;
     if (!me) {
       location.replace("/login.html");
       return;
@@ -79,6 +111,7 @@
     if (me.papel !== "admin") {
       location.replace("/");
     }
+    applySsoUi();
   }
 
   async function loadUsers() {
@@ -107,12 +140,16 @@
       .map((u) => {
         const papel = papelClass(u.papel);
         const ativo = u.ativo ? "ativo" : "inativo";
+        const sso = u.sso_ligado ? " · SSO" : ssoAtivo ? " · local" : "";
         return `
           <tr>
-            <td><strong>${escapeHtml(u.usuario)}</strong></td>
+            <td>
+              <strong>${escapeHtml(u.usuario)}</strong>
+              ${u.email ? `<div class="admin-email">${escapeHtml(u.email)}</div>` : ""}
+            </td>
             <td>${escapeHtml(u.nome || "—")}</td>
             <td><span class="badge-papel ${papel}">${papelLabel(u.papel)}</span></td>
-            <td><span class="badge-status ${ativo}">${u.ativo ? "Ativo" : "Inativo"}</span></td>
+            <td><span class="badge-status ${ativo}">${u.ativo ? "Ativo" : "Inativo"}${sso}</span></td>
             <td>${escapeHtml(fmtDateTime(u.criado_em))}</td>
             <td>
               <button type="button" class="btn-run btn-small" data-edit-user="${u.id}">
@@ -131,11 +168,21 @@
     el.editId.value = user.id;
     el.editTitle.textContent = user.usuario;
     el.editNome.value = user.nome || "";
+    el.editEmail.value = user.email || "";
     el.editPapel.value = papelClass(user.papel);
     el.editAtivo.value = user.ativo ? "1" : "0";
     el.editSenha.value = "";
     el.editError.hidden = true;
     el.editDelete.style.display = me && me.id === user.id ? "none" : "";
+    const ligado = !!user.sso_ligado;
+    if (el.editSenhaWrap) el.editSenhaWrap.hidden = ligado;
+    if (el.ligarSsoBox) {
+      el.ligarSsoBox.hidden = !ssoAtivo || ligado;
+      if (el.ligarSsoEmail) el.ligarSsoEmail.value = user.email || "";
+    }
+    if (el.btnReenviarConvite) {
+      el.btnReenviarConvite.hidden = !ssoAtivo || !ligado;
+    }
     el.dialog.showModal();
   }
 
@@ -143,17 +190,28 @@
     event.preventDefault();
     el.formError.hidden = true;
     try {
-      await api("/api/usuarios", {
+      const payload = {
+        nome: el.userNome.value.trim(),
+        papel: el.userPapel.value,
+      };
+      if (ssoAtivo) {
+        payload.email = (el.userEmail.value || "").trim().toLowerCase();
+        payload.usuario = payload.email;
+      } else {
+        payload.usuario = el.userLogin.value.trim();
+        payload.senha = el.userSenha.value;
+      }
+      const data = await api("/api/usuarios", {
         method: "POST",
-        body: JSON.stringify({
-          usuario: el.userLogin.value.trim(),
-          nome: el.userNome.value.trim(),
-          senha: el.userSenha.value,
-          papel: el.userPapel.value,
-        }),
+        body: JSON.stringify(payload),
       });
       el.form.reset();
       el.userPapel.value = "editor";
+      applySsoUi();
+      if (data.aviso) {
+        el.formError.textContent = data.aviso;
+        el.formError.hidden = false;
+      }
       await loadUsers();
     } catch (err) {
       el.formError.textContent = err.message || "Erro ao criar usuário";
@@ -175,10 +233,11 @@
     const id = el.editId.value;
     const payload = {
       nome: el.editNome.value.trim(),
+      email: (el.editEmail.value || "").trim().toLowerCase(),
       papel: el.editPapel.value,
       ativo: el.editAtivo.value === "1",
     };
-    if (el.editSenha.value) {
+    if (el.editSenha.value && !el.editSenhaWrap.hidden) {
       payload.senha = el.editSenha.value;
     }
     try {
@@ -209,9 +268,59 @@
     }
   });
 
+  if (el.btnLigarSso) {
+    el.btnLigarSso.addEventListener("click", async () => {
+      const id = el.editId.value;
+      const email = (el.ligarSsoEmail.value || el.editEmail.value || "").trim();
+      if (!id || !email) {
+        el.editError.textContent = "Informe o e-mail para ligar ao SSO.";
+        el.editError.hidden = false;
+        return;
+      }
+      el.editError.hidden = true;
+      try {
+        const data = await api(`/api/usuarios/${encodeURIComponent(id)}/ligar-sso`, {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            nome: el.editNome.value.trim(),
+          }),
+        });
+        await loadUsers();
+        openEdit(id);
+        if (data.aviso) {
+          el.editError.textContent = data.aviso;
+          el.editError.hidden = false;
+        }
+      } catch (err) {
+        el.editError.textContent = err.message || "Erro ao ligar ao SSO";
+        el.editError.hidden = false;
+      }
+    });
+  }
+
+  if (el.btnReenviarConvite) {
+    el.btnReenviarConvite.addEventListener("click", async () => {
+      const id = el.editId.value;
+      if (!id) return;
+      el.editError.hidden = true;
+      try {
+        await api(`/api/usuarios/${encodeURIComponent(id)}/reenviar-convite`, {
+          method: "POST",
+        });
+        el.editError.textContent = "Convite reenviado.";
+        el.editError.hidden = false;
+      } catch (err) {
+        el.editError.textContent = err.message || "Erro ao reenviar convite";
+        el.editError.hidden = false;
+      }
+    });
+  }
+
   el.btnSair.addEventListener("click", async () => {
-    await fetch("/api/logout", { method: "POST" });
-    location.replace("/login.html");
+    const res = await fetch("/api/logout", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    location.replace(data.sso_logout || "/login.html");
   });
 
   if (el.btnVoltar) {

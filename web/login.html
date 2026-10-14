@@ -35,6 +35,9 @@
       <h1 id="loginTitle">SET Projetos</h1>
       <p class="login-sub">Acesso ao portfólio e painéis de acompanhamento</p>
 
+      <p class="login-error" id="loginError" hidden></p>
+      <a class="btn-login" id="loginSso" href="/login/sso" hidden>Entrar</a>
+      <p class="login-sep" id="loginSep" hidden>ou acesso local</p>
       <form id="loginForm" autocomplete="on">
         <label>
           Usuário
@@ -75,7 +78,6 @@
             </button>
           </span>
         </label>
-        <p class="login-error" id="loginError" hidden></p>
         <button type="submit" class="btn-login" id="loginSubmit">Entrar</button>
       </form>
     </main>

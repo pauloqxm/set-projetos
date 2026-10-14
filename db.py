@@ -572,6 +572,8 @@ CREATE TABLE IF NOT EXISTS usuarios (
     usuario TEXT NOT NULL UNIQUE COLLATE NOCASE,
     senha_hash TEXT NOT NULL,
     nome TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    sso_sub TEXT,
     papel TEXT NOT NULL DEFAULT 'editor',
     ativo INTEGER NOT NULL DEFAULT 1,
     criado_em TEXT NOT NULL DEFAULT '',
@@ -579,6 +581,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessoes (
     token TEXT PRIMARY KEY,
@@ -701,6 +704,8 @@ CREATE TABLE IF NOT EXISTS usuarios (
     usuario TEXT NOT NULL UNIQUE,
     senha_hash TEXT NOT NULL,
     nome TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    sso_sub TEXT,
     papel TEXT NOT NULL DEFAULT 'editor',
     ativo INTEGER NOT NULL DEFAULT 1,
     criado_em TEXT NOT NULL DEFAULT '',
@@ -708,6 +713,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usuarios_usuario ON usuarios(usuario);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessoes (
     token TEXT PRIMARY KEY,
@@ -917,6 +923,16 @@ def _ensure_columns(conn: _ConnProxy) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_salas_local ON salas(local_id)"
         )
+        if not _has_col("usuarios", "email"):
+            conn.execute(
+                "ALTER TABLE usuarios ADD COLUMN email TEXT NOT NULL DEFAULT ''"
+            )
+        if not _has_col("usuarios", "sso_sub"):
+            conn.execute("ALTER TABLE usuarios ADD COLUMN sso_sub TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub "
+            "ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL"
+        )
         ensure_uploads_dir()
         return
 
@@ -982,6 +998,16 @@ def _ensure_columns(conn: _ConnProxy) -> None:
         WHERE id = ? AND TRIM(IFNULL(inicio_projeto, '')) = ''
         """,
         (CASA_TRABALHADOR_ID,),
+    )
+    user_raw = conn._conn.execute("PRAGMA table_info(usuarios)").fetchall()
+    user_cols = {row[1] for row in user_raw}
+    if "email" not in user_cols:
+        conn.execute("ALTER TABLE usuarios ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+    if "sso_sub" not in user_cols:
+        conn.execute("ALTER TABLE usuarios ADD COLUMN sso_sub TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_sso_sub "
+        "ON usuarios(sso_sub) WHERE sso_sub IS NOT NULL"
     )
     ensure_uploads_dir()
 
@@ -1744,6 +1770,9 @@ def _user_public(row: Any) -> dict:
     data["pode_editar"] = pode_editar(data["papel"])
     data["pode_reservar"] = pode_reservar(data["papel"])
     data["papel_label"] = PAPEL_LABELS.get(data["papel"], data["papel"])
+    data["email"] = data.get("email") or ""
+    data["sso_sub"] = data.get("sso_sub") or None
+    data["sso_ligado"] = bool(data.get("sso_sub"))
     return data
 
 
@@ -1782,7 +1811,7 @@ def list_usuarios() -> list[dict]:
         init_db(conn)
         rows = conn.execute(
             """
-            SELECT id, usuario, nome, papel, ativo, criado_em, atualizado_em
+            SELECT id, usuario, nome, email, sso_sub, papel, ativo, criado_em, atualizado_em
             FROM usuarios
             ORDER BY papel DESC, lower(usuario)
             """
@@ -1793,7 +1822,7 @@ def list_usuarios() -> list[dict]:
 def get_usuario(conn: _ConnProxy, user_id: int) -> dict | None:
     row = conn.execute(
         """
-        SELECT id, usuario, nome, papel, ativo, criado_em, atualizado_em, senha_hash
+        SELECT id, usuario, nome, email, sso_sub, papel, ativo, criado_em, atualizado_em, senha_hash
         FROM usuarios WHERE id=?
         """,
         (user_id,),
@@ -1804,7 +1833,7 @@ def get_usuario(conn: _ConnProxy, user_id: int) -> dict | None:
 def get_usuario_by_login(conn: _ConnProxy, usuario: str) -> dict | None:
     row = conn.execute(
         """
-        SELECT id, usuario, nome, papel, ativo, criado_em, atualizado_em, senha_hash
+        SELECT id, usuario, nome, email, sso_sub, papel, ativo, criado_em, atualizado_em, senha_hash
         FROM usuarios WHERE lower(usuario) = lower(?)
         """,
         ((usuario or "").strip(),),
@@ -1856,6 +1885,110 @@ def create_usuario(
         return _user_public(row)
 
 
+def create_usuario_sso(
+    *,
+    usuario: str,
+    email: str,
+    nome: str = "",
+    papel: str = "editor",
+    sso_sub: str,
+) -> dict:
+    usuario = (usuario or email or "").strip()
+    email = (email or "").strip().lower()
+    nome = (nome or "").strip()
+    sso_sub = (sso_sub or "").strip()
+    papel = normalize_papel(papel or "editor")
+    if not email or "@" not in email:
+        raise ValueError("Informe um e-mail válido")
+    if not sso_sub:
+        raise ValueError("Inscrição SSO sem identificador")
+    if not usuario:
+        usuario = email
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as conn:
+        init_db(conn)
+        if get_usuario_by_login(conn, usuario):
+            raise ValueError("Já existe um usuário com este e-mail")
+        dup = conn.execute(
+            "SELECT 1 FROM usuarios WHERE sso_sub = ?", (sso_sub,)
+        ).fetchone()
+        if dup:
+            raise ValueError("Esta conta SSO já está ligada a outro usuário")
+        if conn.dialect == "postgres":
+            row = conn.execute(
+                """
+                INSERT INTO usuarios (
+                    usuario, senha_hash, nome, email, sso_sub, papel, ativo,
+                    criado_em, atualizado_em
+                )
+                VALUES (?, '!sso', ?, ?, ?, ?, 1, ?, ?)
+                RETURNING id, usuario, nome, email, sso_sub, papel, ativo,
+                          criado_em, atualizado_em, senha_hash
+                """,
+                (usuario, nome or usuario, email, sso_sub, papel, now, now),
+            ).fetchone()
+            return _user_public(row)
+        cur = conn.execute(
+            """
+            INSERT INTO usuarios (
+                usuario, senha_hash, nome, email, sso_sub, papel, ativo,
+                criado_em, atualizado_em
+            )
+            VALUES (?, '!sso', ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (usuario, nome or usuario, email, sso_sub, papel, now, now),
+        )
+        row = get_usuario(conn, cur.lastrowid)
+        return _user_public(row)
+
+
+def get_usuario_by_sso_sub(sub: str) -> dict | None:
+    sub = (sub or "").strip()
+    if not sub:
+        return None
+    with connect() as conn:
+        init_db(conn)
+        row = conn.execute(
+            """
+            SELECT id, usuario, nome, email, sso_sub, papel, ativo, criado_em, atualizado_em
+            FROM usuarios WHERE sso_sub = ? AND ativo = 1
+            """,
+            (sub,),
+        ).fetchone()
+        return _user_public(row) if row else None
+
+
+def ligar_usuario_sso(user_id: int, *, email: str, sso_sub: str) -> dict:
+    email = (email or "").strip().lower()
+    sso_sub = (sso_sub or "").strip()
+    if not email or "@" not in email:
+        raise ValueError("Informe um e-mail válido")
+    if not sso_sub:
+        raise ValueError("Inscrição SSO sem identificador")
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as conn:
+        init_db(conn)
+        before = get_usuario(conn, user_id)
+        if not before:
+            raise ValueError("Usuário não encontrado")
+        dup = conn.execute(
+            "SELECT 1 FROM usuarios WHERE sso_sub = ? AND id <> ?",
+            (sso_sub, user_id),
+        ).fetchone()
+        if dup:
+            raise ValueError("Esta conta SSO já está ligada a outro usuário")
+        conn.execute(
+            """
+            UPDATE usuarios
+            SET email = ?, sso_sub = ?, atualizado_em = ?
+            WHERE id = ?
+            """,
+            (email, sso_sub, now, user_id),
+        )
+        row = get_usuario(conn, user_id)
+        return _user_public(row)
+
+
 def update_usuario(user_id: int, updates: dict) -> dict | None:
     with connect() as conn:
         init_db(conn)
@@ -1866,6 +1999,8 @@ def update_usuario(user_id: int, updates: dict) -> dict | None:
         fields: dict[str, object] = {}
         if "nome" in updates:
             fields["nome"] = str(updates["nome"] or "").strip()
+        if "email" in updates:
+            fields["email"] = str(updates["email"] or "").strip().lower()
         if "papel" in updates:
             fields["papel"] = normalize_papel(str(updates["papel"] or ""))
         if "ativo" in updates:
@@ -1922,7 +2057,8 @@ def authenticate(usuario: str, senha: str) -> dict | None:
         row = get_usuario_by_login(conn, usuario)
         if not row or not row.get("ativo"):
             return None
-        if not verify_password(senha or "", row["senha_hash"]):
+        stored = row.get("senha_hash") or ""
+        if stored == "!sso" or not verify_password(senha or "", stored):
             return None
         return _user_public(row)
 
@@ -1960,7 +2096,8 @@ def get_session_user(token: str | None) -> dict | None:
         init_db(conn)
         row = conn.execute(
             """
-            SELECT u.id, u.usuario, u.nome, u.papel, u.ativo, u.criado_em, u.atualizado_em
+            SELECT u.id, u.usuario, u.nome, u.email, u.sso_sub, u.papel, u.ativo,
+                   u.criado_em, u.atualizado_em
             FROM sessoes s
             JOIN usuarios u ON u.id = s.usuario_id
             WHERE s.token = ? AND s.expira_em >= ? AND u.ativo = 1

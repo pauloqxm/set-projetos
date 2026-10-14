@@ -131,7 +131,30 @@
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  display: block;
+  box-sizing: border-box;
   transition: background 0.15s, transform 0.15s, opacity 0.15s;
+}
+
+.login-sep {
+  margin: 18px 0 10px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.btn-login-local {
+  background: #4d4d4d;
+  margin-top: 4px;
+}
+
+.btn-login-local:hover:not(:disabled) {
+  background: #3a3a3a;
 }
 
 .btn-login:hover:not(:disabled) {
@@ -371,6 +394,36 @@
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.admin-email {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.admin-sso-box {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f4f7f8;
+  border: 1px solid var(--line);
+}
+
+.admin-sso-box p {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.admin-sso-box .btn-run {
+  margin-top: 10px;
+}
+
+#btnReenviarConvite {
+  margin: 8px 0 12px;
 }
 
 .admin-table {

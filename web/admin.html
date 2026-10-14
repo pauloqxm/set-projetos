@@ -36,7 +36,7 @@
             </div>
             <div class="topbar-titles">
               <p class="eyebrow">SET / IDT · Administração</p>
-              <h1>Usuários e senhas</h1>
+              <h1>Usuários</h1>
               <p class="topbar-meta">
                 Gerencie o acesso ao painel de monitoramento
               </p>
@@ -77,19 +77,25 @@
         <section class="panel admin-panel">
           <div class="panel-head">
             <h2>Novo usuário</h2>
-            <p>Crie contas com usuário, senha e nível (Administrador, Editor ou Consulta)</p>
+            <p id="userFormHint">
+              Crie contas com usuário, senha e nível (Administrador, Editor, Consulta ou Reservas)
+            </p>
           </div>
           <form id="userForm" class="admin-form">
             <div class="admin-form-grid">
-              <label>
+              <label id="userLoginWrap">
                 Usuário
                 <input id="userLogin" type="text" required minlength="3" autocomplete="off" />
+              </label>
+              <label id="userEmailWrap" hidden>
+                E-mail
+                <input id="userEmail" type="email" autocomplete="off" />
               </label>
               <label>
                 Nome
                 <input id="userNome" type="text" autocomplete="off" />
               </label>
-              <label>
+              <label id="userSenhaWrap">
                 Senha
                 <input id="userSenha" type="password" required minlength="6" autocomplete="new-password" />
               </label>
@@ -114,7 +120,7 @@
           <div class="panel-head panel-head-row">
             <div>
               <h2>Usuários cadastrados</h2>
-              <p>Senhas são armazenadas com hash (PBKDF2) — nunca em texto puro</p>
+              <p id="usersListHint">Senhas são armazenadas com hash (PBKDF2) — nunca em texto puro</p>
             </div>
             <span class="tag" id="userCount">—</span>
           </div>
@@ -149,6 +155,10 @@
           <input id="editUserNome" type="text" />
         </label>
         <label>
+          E-mail
+          <input id="editUserEmail" type="email" autocomplete="off" />
+        </label>
+        <label>
           Papel
           <select id="editUserPapel">
             <option value="editor">Editor</option>
@@ -164,7 +174,7 @@
             <option value="0">Inativo</option>
           </select>
         </label>
-        <label>
+        <label id="editSenhaWrap">
           Nova senha
           <input
             id="editUserSenha"
@@ -174,6 +184,19 @@
             autocomplete="new-password"
           />
         </label>
+        <div class="admin-sso-box" id="ligarSsoBox" hidden>
+          <p>Este usuário ainda entra com senha local. Informe o e-mail para ligar ao SSO.</p>
+          <label>
+            E-mail do convite
+            <input id="ligarSsoEmail" type="email" autocomplete="off" />
+          </label>
+          <button type="button" class="btn-run btn-small" id="btnLigarSso">
+            Ligar ao SSO
+          </button>
+        </div>
+        <button type="button" class="btn-ghost btn-small" id="btnReenviarConvite" hidden>
+          Reenviar convite SSO
+        </button>
         <p class="login-error" id="editUserError" hidden></p>
         <div class="dialog-actions">
           <button type="button" class="btn-danger" id="editUserDelete">

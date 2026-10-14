@@ -1880,8 +1880,9 @@
   }
   if (el.btnSair) {
     el.btnSair.addEventListener("click", async () => {
-      await fetch("/api/logout", { method: "POST" });
-      location.replace("/login.html");
+      const res = await fetch("/api/logout", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      location.replace(data.sso_logout || "/login.html");
     });
   }
   if (el.btnVoltar) {

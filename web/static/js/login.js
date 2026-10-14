@@ -5,6 +5,21 @@
   const error = document.getElementById("loginError");
   const submit = document.getElementById("loginSubmit");
   const toggle = document.getElementById("toggleSenha");
+  const ssoBtn = document.getElementById("loginSso");
+  const sep = document.getElementById("loginSep");
+
+  const ERROS_SSO = {
+    sem_acesso:
+      "Sua conta não tem acesso ao SET Projetos. Fale com o administrador.",
+    sso: "Não foi possível concluir o login. Tente de novo.",
+  };
+
+  const params = new URLSearchParams(location.search);
+  const codigoErro = params.get("erro");
+  if (codigoErro && ERROS_SSO[codigoErro]) {
+    error.textContent = ERROS_SSO[codigoErro];
+    error.hidden = false;
+  }
 
   async function ensureLoggedOut() {
     try {
@@ -15,6 +30,19 @@
         location.replace(
           data.usuario.papel === "reservas" ? "/salas.html" : "/portfolio.html"
         );
+        return;
+      }
+      if (data.sso_ativo && ssoBtn) {
+        ssoBtn.hidden = false;
+        if (data.login_local) {
+          if (sep) sep.hidden = false;
+          submit.classList.add("btn-login-local");
+          submit.textContent = "Entrar com usuário e senha";
+        } else {
+          form.hidden = true;
+          usuario.required = false;
+          senha.required = false;
+        }
       }
     } catch (_) {}
   }
